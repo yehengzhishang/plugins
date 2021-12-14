@@ -13,7 +13,12 @@ import android.hardware.camera2.CameraCharacteristics;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.Message;
 import android.provider.MediaStore;
+
+import androidx.annotation.NonNull;
 import androidx.annotation.VisibleForTesting;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.FileProvider;
@@ -90,6 +95,7 @@ public class ImagePickerDelegate
   private final PermissionManager permissionManager;
   private final IntentResolver intentResolver;
   private final FileUriResolver fileUriResolver;
+  private final FileUriResolverWrapper fileUriResolverWrapper;
   private final FileUtils fileUtils;
   private CameraDevice cameraDevice;
 
@@ -201,7 +207,8 @@ public class ImagePickerDelegate
     this.methodCall = methodCall;
     this.permissionManager = permissionManager;
     this.intentResolver = intentResolver;
-    this.fileUriResolver = fileUriResolver;
+    this.fileUriResolverWrapper = new FileUriResolverWrapper(fileUriResolver);
+    this.fileUriResolver = this.fileUriResolverWrapper;
     this.fileUtils = fileUtils;
     this.cache = cache;
   }
@@ -529,6 +536,9 @@ public class ImagePickerDelegate
           new OnPathReadyListener() {
             @Override
             public void onPathReady(String path) {
+              if (fileUriResolverWrapper != null) {
+                fileUriResolverWrapper.cancel();
+              }
               handleImageResult(path, true);
             }
           });
@@ -663,6 +673,62 @@ public class ImagePickerDelegate
       }
     } else {
       intent.putExtra("android.intent.extras.CAMERA_FACING", 1);
+    }
+  }
+
+  static class FileUriResolverWrapper implements FileUriResolver {
+    private final FileUriResolver fileUriResolver;
+    private final int URI_WHAT = 100;
+    private final Handler handler = new Handler(Looper.getMainLooper(), new Handler.Callback() {
+      @Override
+      public boolean handleMessage(@NonNull Message message) {
+        if (message.what == URI_WHAT) {
+          onReady(message);
+          return true;
+        }
+        return false;
+      }
+    });
+
+    FileUriResolverWrapper(FileUriResolver fileUriResolver) {
+      this.fileUriResolver = fileUriResolver;
+    }
+
+    void cancel(){
+      handler.removeMessages(URI_WHAT);
+    }
+
+    void onReady(Message message){
+      Object obj = message.obj;
+      if(!(obj instanceof UriObj)){
+        return;
+      }
+      UriObj uriObj = (UriObj) obj;
+      uriObj.listener.onPathReady(uriObj.imageUri.getPath());
+    }
+
+    @Override
+    public Uri resolveFileProviderUriForFile(String fileProviderName, File imageFile) {
+      return fileUriResolver.resolveFileProviderUriForFile(fileProviderName, imageFile);
+    }
+
+    @Override
+    public void getFullImagePath(Uri imageUri, OnPathReadyListener listener) {
+      Message message = handler.obtainMessage();
+      message.what = URI_WHAT;
+      message.obj = new UriObj(imageUri, listener);
+      handler.sendMessageDelayed(message,2000);
+      fileUriResolver.getFullImagePath(imageUri, listener);
+    }
+  }
+
+  static class UriObj {
+    final Uri imageUri;
+    final OnPathReadyListener listener;
+
+    UriObj(Uri imageUri, OnPathReadyListener listener) {
+      this.imageUri = imageUri;
+      this.listener = listener;
     }
   }
 }
